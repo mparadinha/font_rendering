@@ -266,8 +266,6 @@ pub const Window = struct {
             .y = @floatCast(f32, yoffset),
         } }) catch unreachable;
 
-        std.debug.print("recieved scroll callback for xoffset={}, yoffset={}\n", .{ xoffset, yoffset });
-
         _ = yoffset;
     }
 };

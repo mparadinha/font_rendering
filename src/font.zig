@@ -1,16 +1,24 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+// NOTE: when two quadratic curves are consecutive and share an on-curve control point
+// sometimes that shared point is omitted.
+// so instead of storing this:
+// https://developer.apple.com/fonts/TrueType-Reference-Manual/RM01/fig02.jpg
+// the fonts just stores this:
+// https://developer.apple.com/fonts/TrueType-Reference-Manual/RM01/fig03.jpg
+// and we can just get the middle point by doing an average
+
 pub const LoadError = error{
     NotOpenType,
     NoCmapTable,
-    NoGlyfTable,
+    NoGlyphTable,
     NoLocaTable,
     NoHeadTable,
     NoMaxpTable,
 };
 
-pub const Glyf = struct {
+pub const Glyph = struct {
     contours: []Contour,
     xmin: i16,
     ymin: i16,
@@ -43,31 +51,31 @@ pub const Glyf = struct {
         }
     };
 
-    pub fn free(self: Glyf, allocator: Allocator) void {
+    pub fn free(self: Glyph, allocator: Allocator) void {
         for (self.contours) |contour| allocator.free(contour.segments);
         allocator.free(self.contours);
     }
 };
 
-/// Caller owns returned memory. Call glyf.free(allocator) to clean up.
-fn decodeGlyf(allocator: Allocator, data: []u8) !Glyf {
+/// Caller owns returned memory. Call glyph.free(allocator) to clean up.
+fn decodeGlyph(allocator: Allocator, data: []u8) !Glyph {
     const reader = std.io.fixedBufferStream(data).reader();
 
-    var glyf: Glyf = undefined;
+    var glyph: Glyph = undefined;
 
     const num_contours = try reader.readIntBig(i16);
     if (num_contours < 0) {
         std.debug.print("ignoring compound contours for now\n", .{});
-        return glyf;
+        return glyph;
     }
-    glyf.contours = try allocator.alloc(Glyf.Contour, @intCast(usize, num_contours));
+    glyph.contours = try allocator.alloc(Glyph.Contour, @intCast(usize, num_contours));
 
-    glyf.xmin = try reader.readIntBig(i16);
-    glyf.ymin = try reader.readIntBig(i16);
-    glyf.xmax = try reader.readIntBig(i16);
-    glyf.ymax = try reader.readIntBig(i16);
+    glyph.xmin = try reader.readIntBig(i16);
+    glyph.ymin = try reader.readIntBig(i16);
+    glyph.xmax = try reader.readIntBig(i16);
+    glyph.ymax = try reader.readIntBig(i16);
 
-    // TODO: compound glyfs
+    // TODO: compound glyphs
     std.debug.assert(num_contours >= 0);
 
     var end_points = try allocator.alloc(u16, @intCast(usize, num_contours));
@@ -133,8 +141,8 @@ fn decodeGlyf(allocator: Allocator, data: []u8) !Glyf {
     }
 
     // convert points into lists of segments
-    for (glyf.contours) |*contour, contour_idx| {
-        var segments = std.ArrayList(Glyf.Segment).init(allocator);
+    for (glyph.contours) |*contour, contour_idx| {
+        var segments = std.ArrayList(Glyph.Segment).init(allocator);
 
         const start_point_idx = if (contour_idx == 0) 0 else end_points[contour_idx - 1] + 1;
         var point_idx: usize = start_point_idx;
@@ -223,10 +231,10 @@ fn decodeGlyf(allocator: Allocator, data: []u8) !Glyf {
         contour.segments = segments.toOwnedSlice();
     }
 
-    return glyf;
+    return glyph;
 }
 
-pub fn loadTTF(allocator: Allocator, filepath: []const u8) !Glyf {
+pub fn loadTTF(allocator: Allocator, filepath: []const u8) !Glyph {
     const ttf_data = try std.fs.cwd().readFileAlloc(allocator, filepath, std.math.maxInt(usize));
     defer allocator.free(ttf_data);
 
@@ -258,8 +266,8 @@ pub fn loadTTF(allocator: Allocator, filepath: []const u8) !Glyf {
         if (std.mem.eql(u8, tag, "maxp")) maxp_loc = filepos;
     }
 
-    const num_glyfs = if (maxp_loc) |loc| std.mem.readIntSliceBig(u16, ttf_data[loc + 4 .. loc + 6]) else return LoadError.NoMaxpTable;
-    std.debug.print("num_glyfs = {}\n", .{num_glyfs});
+    const num_glyphs = if (maxp_loc) |loc| std.mem.readIntSliceBig(u16, ttf_data[loc + 4 .. loc + 6]) else return LoadError.NoMaxpTable;
+    std.debug.print("num_glyphs = {}\n", .{num_glyphs});
 
     var index_to_loc_format: usize = undefined;
 
@@ -269,57 +277,57 @@ pub fn loadTTF(allocator: Allocator, filepath: []const u8) !Glyf {
         std.debug.print("indexToLocFormat = {}\n", .{index_to_loc_format});
     } else return LoadError.NoHeadTable;
 
-    var glyf_locs = std.ArrayList(struct { offset: usize, size: usize }).init(allocator);
-    defer glyf_locs.deinit();
+    var glyph_locs = std.ArrayList(struct { offset: usize, size: usize }).init(allocator);
+    defer glyph_locs.deinit();
 
     if (loca_loc) |loc| {
         std.debug.print("'loca' table:\n", .{});
         i = 0;
         const loca_offsets_size: usize = if (index_to_loc_format == 1) 4 else 2;
-        while (i < num_glyfs + 1) : (i += 1) {
+        while (i < num_glyphs + 1) : (i += 1) {
             const loc_offset = loc + loca_offsets_size * i;
-            const glyf_offset_data = ttf_data[loc_offset .. loc_offset + loca_offsets_size];
-            const glyf_offset = switch (loca_offsets_size) {
-                2 => @intCast(u32, std.mem.readIntSliceBig(u16, glyf_offset_data)),
-                4 => std.mem.readIntSliceBig(u32, glyf_offset_data),
+            const glyph_offset_data = ttf_data[loc_offset .. loc_offset + loca_offsets_size];
+            const glyph_offset = switch (loca_offsets_size) {
+                2 => @intCast(u32, std.mem.readIntSliceBig(u16, glyph_offset_data)),
+                4 => std.mem.readIntSliceBig(u32, glyph_offset_data),
                 else => unreachable,
             } * if (index_to_loc_format == 1) @as(usize, 1) else @as(usize, 2);
 
-            if (i > 0 and i < num_glyfs) {
-                const last_offset = glyf_locs.items[glyf_locs.items.len - 1].offset;
-                glyf_locs.items[glyf_locs.items.len - 1].size = glyf_offset - last_offset;
+            if (i > 0 and i < num_glyphs) {
+                const last_offset = glyph_locs.items[glyph_locs.items.len - 1].offset;
+                glyph_locs.items[glyph_locs.items.len - 1].size = glyph_offset - last_offset;
             }
 
-            try glyf_locs.append(.{ .offset = glyf_offset, .size = 0 });
+            try glyph_locs.append(.{ .offset = glyph_offset, .size = 0 });
         }
     } else return LoadError.NoLocaTable;
 
-    //for (glyf_locs.items) |loc, idx| std.debug.print("glyf #{: >4}: offset={: >5}, size={: >4}\n", .{ idx, loc.offset, loc.size });
+    //for (glyph_locs.items) |loc, idx| std.debug.print("glyph #{: >4}: offset={: >5}, size={: >4}\n", .{ idx, loc.offset, loc.size });
 
     if (glyf_loc) |loc| {
-        var compound_glyfs: usize = 0;
-        for (glyf_locs.items) |glyf, glyf_idx| {
-            std.debug.print("glyf #{}: offset={}, size={}\n", .{ glyf_idx, glyf.offset, glyf.size });
-            if (glyf.size == 0) continue;
+        var compound_glyphs: usize = 0;
+        for (glyph_locs.items) |glyph, glyph_idx| {
+            std.debug.print("glyph #{}: offset={}, size={}\n", .{ glyph_idx, glyph.offset, glyph.size });
+            if (glyph.size == 0) continue;
 
-            const glyf_data = ttf_data[loc + glyf.offset .. loc + glyf.offset + glyf.size];
-            var glyf_stream = std.io.fixedBufferStream(glyf_data);
-            const glyf_reader = glyf_stream.reader();
+            const glyph_data = ttf_data[loc + glyph.offset .. loc + glyph.offset + glyph.size];
+            var glyph_stream = std.io.fixedBufferStream(glyph_data);
+            const glyph_reader = glyph_stream.reader();
 
-            const num_contours = try glyf_reader.readIntBig(i16);
+            const num_contours = try glyph_reader.readIntBig(i16);
             std.debug.print("  # of contours: {}\n", .{num_contours});
-            const xmin = try glyf_reader.readIntBig(i16);
-            const ymin = try glyf_reader.readIntBig(i16);
-            const xmax = try glyf_reader.readIntBig(i16);
-            const ymax = try glyf_reader.readIntBig(i16);
+            const xmin = try glyph_reader.readIntBig(i16);
+            const ymin = try glyph_reader.readIntBig(i16);
+            const xmax = try glyph_reader.readIntBig(i16);
+            const ymax = try glyph_reader.readIntBig(i16);
             std.debug.print("  xmin: {}, ymin: {} (FUnits)\n", .{ xmin, ymin });
             std.debug.print("  xmax: {}, ymax: {} (FUnits)\n", .{ xmax, ymax });
 
-            // TODO: deal with compound glyfs
+            // TODO: deal with compound glyphs
             //std.debug.assert(num_contours >= 0);
             if (num_contours < 0) {
-                std.debug.print("glyf idx={} is compound. skipping.\n", .{glyf_idx});
-                compound_glyfs += 1;
+                std.debug.print("glyph idx={} is compound. skipping.\n", .{glyph_idx});
+                compound_glyphs += 1;
                 continue;
             }
 
@@ -328,7 +336,7 @@ pub fn loadTTF(allocator: Allocator, filepath: []const u8) !Glyf {
             std.debug.print("  end pts of contours: [", .{});
             var contour: usize = 0;
             while (contour < num_contours) : (contour += 1) {
-                const end_pt = try glyf_reader.readIntBig(u16);
+                const end_pt = try glyph_reader.readIntBig(u16);
                 const str = if (contour == num_contours - 1) "]\n" else ", ";
                 std.debug.print("{}{s}", .{ end_pt, str });
                 // TODO: report this bug to zig compiler repo (might be fixed in stage2):
@@ -341,11 +349,11 @@ pub fn loadTTF(allocator: Allocator, filepath: []const u8) !Glyf {
                 if (contour == num_contours - 1) total_num_points = end_pt + 1;
             }
 
-            const instructions_len = try glyf_reader.readIntBig(u16);
+            const instructions_len = try glyph_reader.readIntBig(u16);
             std.debug.print("  instructions: [", .{});
             var insts: usize = 0;
             while (insts < instructions_len) : (insts += 1) {
-                const inst = try glyf_reader.readByte();
+                const inst = try glyph_reader.readByte();
                 const str = if (insts == instructions_len - 1) "]\n" else ", ";
                 std.debug.print("0x{x:0>2}{s}", .{ inst, str });
             }
@@ -356,11 +364,11 @@ pub fn loadTTF(allocator: Allocator, filepath: []const u8) !Glyf {
             defer allocator.free(pt_flags);
             var flags_read: usize = 0;
             while (flags_read < pt_flags.len) {
-                const flags = try glyf_reader.readByte();
+                const flags = try glyph_reader.readByte();
                 pt_flags[flags_read] = flags;
                 flags_read += 1;
                 if ((flags & 0x08) != 0) {
-                    const repeat = try glyf_reader.readByte();
+                    const repeat = try glyph_reader.readByte();
                     var done: usize = 0;
                     while (done < repeat) : (done += 1) {
                         pt_flags[flags_read] = flags;
@@ -388,14 +396,14 @@ pub fn loadTTF(allocator: Allocator, filepath: []const u8) !Glyf {
                 const xsame = (flag & 0x10) != 0;
                 const last_x = if (idx == 0) 0 else points[idx - 1].x;
                 if (xshort) {
-                    const byte = try glyf_reader.readByte();
+                    const byte = try glyph_reader.readByte();
                     const delta = if (xsame) @intCast(i16, byte) else -@intCast(i16, byte);
                     points[idx].x = last_x + delta;
                 } else {
                     if (xsame) {
                         points[idx].x = last_x;
                     } else {
-                        const delta = try glyf_reader.readIntBig(i16);
+                        const delta = try glyph_reader.readIntBig(i16);
                         points[idx].x = last_x + delta;
                     }
                 }
@@ -406,14 +414,14 @@ pub fn loadTTF(allocator: Allocator, filepath: []const u8) !Glyf {
                 const ysame = (flag & 0x20) != 0;
                 const last_y = if (idx == 0) 0 else points[idx - 1].y;
                 if (yshort) {
-                    const byte = try glyf_reader.readByte();
+                    const byte = try glyph_reader.readByte();
                     const delta = if (ysame) @intCast(i16, byte) else -@intCast(i16, byte);
                     points[idx].y = last_y + delta;
                 } else {
                     if (ysame) {
                         points[idx].y = last_y;
                     } else {
-                        const delta = try glyf_reader.readIntBig(i16);
+                        const delta = try glyph_reader.readIntBig(i16);
                         points[idx].y = last_y + delta;
                     }
                 }
@@ -424,10 +432,10 @@ pub fn loadTTF(allocator: Allocator, filepath: []const u8) !Glyf {
             }
             std.debug.print("  ]\n", .{});
 
-            if (glyf_idx == 4) {
-                const g = try decodeGlyf(allocator, glyf_data);
+            if (glyph_idx == 4) {
+                const g = try decodeGlyph(allocator, glyph_data);
                 std.debug.print("\n", .{});
-                std.debug.print("glyf using decoded fn: \n", .{});
+                std.debug.print("glyph using decoded fn: \n", .{});
                 for (g.contours) |ct, c_idx| {
                     std.debug.print("  contour #{}:\n", .{c_idx});
                     for (ct.segments) |s| {
@@ -440,8 +448,8 @@ pub fn loadTTF(allocator: Allocator, filepath: []const u8) !Glyf {
                 return g;
             }
         }
-        std.debug.print("there were {} compound glyfs skipped (out of {} total glyfs)\n", .{ compound_glyfs, glyf_locs.items.len });
-    } else return LoadError.NoGlyfTable;
+        std.debug.print("there were {} compound glyphs skipped (out of {} total glyphs)\n", .{ compound_glyphs, glyph_locs.items.len });
+    } else return LoadError.NoGlyphTable;
 
     if (cmap_loc) |loc| {
         std.debug.print("'cmap' table:\n", .{});

@@ -22,8 +22,8 @@ pub fn main() anyerror!void {
     const gpa = general_purpose_allocator.allocator();
 
     const font = @import("font.zig");
-    const glyf = try font.loadTTF(gpa, "VictorMono-Regular.ttf");
-    defer glyf.free(gpa);
+    const glyph = try font.loadTTF(gpa, "VictorMono-Regular.ttf");
+    defer glyph.free(gpa);
     //if (true) return;
 
     var width: u32 = 800;
@@ -69,34 +69,32 @@ pub fn main() anyerror!void {
         .{ .n_elems = 2 },
     });
     defer quad_text_mesh.deinit();
-    var glyf_tex_data = std.ArrayList(i16).init(gpa);
-    defer glyf_tex_data.deinit();
-    for (glyf.contours) |cnt| {
-        try glyf_tex_data.append(@intCast(i16, cnt.segments.len));
+    var glyph_tex_data = std.ArrayList(i16).init(gpa);
+    defer glyph_tex_data.deinit();
+    for (glyph.contours) |cnt| {
+        try glyph_tex_data.append(@intCast(i16, cnt.segments.len));
         for (cnt.segments) |s| {
             switch (s) {
                 .line => |line| {
-                    try glyf_tex_data.append(0);
-                    try glyf_tex_data.append(line.start_point.x);
-                    try glyf_tex_data.append(line.start_point.y);
-                    try glyf_tex_data.append(line.end_point.x);
-                    try glyf_tex_data.append(line.end_point.y);
+                    try glyph_tex_data.append(0);
+                    try glyph_tex_data.append(line.start_point.x);
+                    try glyph_tex_data.append(line.start_point.y);
+                    try glyph_tex_data.append(line.end_point.x);
+                    try glyph_tex_data.append(line.end_point.y);
                 },
                 .curve => |curve| {
-                    try glyf_tex_data.append(1);
-                    try glyf_tex_data.append(curve.start_point.x);
-                    try glyf_tex_data.append(curve.start_point.y);
-                    try glyf_tex_data.append(curve.control_point.x);
-                    try glyf_tex_data.append(curve.control_point.y);
-                    try glyf_tex_data.append(curve.end_point.x);
-                    try glyf_tex_data.append(curve.end_point.y);
+                    try glyph_tex_data.append(1);
+                    try glyph_tex_data.append(curve.start_point.x);
+                    try glyph_tex_data.append(curve.start_point.y);
+                    try glyph_tex_data.append(curve.control_point.x);
+                    try glyph_tex_data.append(curve.control_point.y);
+                    try glyph_tex_data.append(curve.end_point.x);
+                    try glyph_tex_data.append(curve.end_point.y);
                 },
             }
         }
     }
-    //const texture_data = [10]i16{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
-    //const texture = dataTexture(&texture_data);
-    const texture = dataTexture(glyf_tex_data.items);
+    const texture = dataTexture(glyph_tex_data.items);
 
     var zoom_mult: f32 = 1;
     var panning_view = false;
@@ -144,11 +142,11 @@ pub fn main() anyerror!void {
         font_shader.bind();
         font_shader.set("zoom_mult", zoom_mult);
         font_shader.set("pan_offset", cumm_offset + pan_offset);
-        font_shader.set("xmin", @intCast(i32, glyf.xmin));
-        font_shader.set("ymin", @intCast(i32, glyf.ymin));
-        font_shader.set("xmax", @intCast(i32, glyf.xmax));
-        font_shader.set("ymax", @intCast(i32, glyf.ymax));
-        font_shader.set("n_contours", @intCast(u32, glyf.contours.len));
+        font_shader.set("xmin", @intCast(i32, glyph.xmin));
+        font_shader.set("ymin", @intCast(i32, glyph.ymin));
+        font_shader.set("xmax", @intCast(i32, glyph.xmax));
+        font_shader.set("ymax", @intCast(i32, glyph.ymax));
+        font_shader.set("n_contours", @intCast(u32, glyph.contours.len));
         font_shader.set("texture_data", @as(i32, 0));
         texture.bind(0);
         quad_text_mesh.draw();
