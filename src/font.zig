@@ -1,14 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-// NOTE: when two quadratic curves are consecutive and share an on-curve control point
-// sometimes that shared point is omitted.
-// so instead of storing this:
-// https://developer.apple.com/fonts/TrueType-Reference-Manual/RM01/fig02.jpg
-// the fonts just stores this:
-// https://developer.apple.com/fonts/TrueType-Reference-Manual/RM01/fig03.jpg
-// and we can just get the middle point by doing an average
-
 pub const LoadError = error{
     NotOpenType,
     NoCmapTable,
@@ -140,92 +132,172 @@ fn decodeGlyph(allocator: Allocator, data: []u8) !Glyph {
         y.* = last_y + delta;
     }
 
+    // TODO: explain the thing
+    // NOTE: when two quadratic curves are consecutive and share an on-curve control point
+    // sometimes that shared point is omitted.
+    // so instead of storing this:
+    // https://developer.apple.com/fonts/TrueType-Reference-Manual/RM01/fig02.jpg
+    // the fonts just stores this:
+    // https://developer.apple.com/fonts/TrueType-Reference-Manual/RM01/fig03.jpg
+    // and we can just get the middle point by doing an average
+    const Point = struct { x: i16, y: i16, on_curve: bool };
+    var points_list = try std.ArrayList(Point).initCapacity(allocator, total_points);
+    var new_end_points = try allocator.alloc(u16, @intCast(usize, num_contours));
+    defer allocator.free(new_end_points);
+    for (end_points) |end_point_idx, i| {
+        const start_point_idx = if (i == 0) 0 else end_points[i - 1] + 1;
+        for (point_flags[start_point_idx .. end_point_idx + 1]) |flag, j| {
+            const idx = j + start_point_idx;
+            const point = Point{
+                .x = x_coords[idx],
+                .y = y_coords[idx],
+                .on_curve = (flag & 0x01) != 0,
+            };
+            try points_list.append(point);
+            const next_idx = if (idx == end_point_idx) start_point_idx else idx + 1;
+            const next_on_curve = (point_flags[next_idx] & 0x01) != 0;
+            if (!point.on_curve and !next_on_curve) {
+                const omitted_control_point = Point{
+                    .x = @divTrunc(x_coords[next_idx] + point.x, 2),
+                    .y = @divTrunc(y_coords[next_idx] + point.y, 2),
+                    .on_curve = true,
+                };
+                try points_list.append(omitted_control_point);
+            }
+        }
+        new_end_points[i] = @intCast(u16, points_list.items.len) - 1;
+    }
+    const points = points_list.toOwnedSlice();
+    defer allocator.free(points);
+
+    std.debug.print("all points (omitted control ones re-generated):\n", .{});
+    for (points) |pt, i| {
+        std.debug.print("[{:>2}] :: x={: >5}, y={: >5}, on_curve={}\n", .{ i, pt.x, pt.y, pt.on_curve });
+    }
+
     // convert points into lists of segments
     for (glyph.contours) |*contour, contour_idx| {
         var segments = std.ArrayList(Glyph.Segment).init(allocator);
 
-        const start_point_idx = if (contour_idx == 0) 0 else end_points[contour_idx - 1] + 1;
+        const start_point_idx = if (contour_idx == 0) 0 else new_end_points[contour_idx - 1] + 1;
+        const contour_points = new_end_points[contour_idx] - start_point_idx + 1;
+
         var point_idx: usize = start_point_idx;
-        while (point_idx <= end_points[contour_idx]) {
-            const on_curve = (point_flags[point_idx] & 0x01) != 0;
-            std.debug.assert(on_curve);
+        while (point_idx <= new_end_points[contour_idx]) {
+            std.debug.print("contour={}, point_idx={}\n", .{ contour_idx, point_idx });
 
-            // if the last point is on_curve then it's a line segment that
-            // connects back to the first point and closes the contour
-            if (point_idx == end_points[contour_idx]) {
+            const point = points[point_idx];
+
+            // sometimes a contour will start in the middle of a curve
+            // we'll get this segment at the end of the contour when it wraps
+            if (!point.on_curve) {
+                point_idx += 1;
+                continue;
+            }
+
+            const next_idx = (((point_idx + 1) - start_point_idx) % contour_points) + start_point_idx;
+            const next_point = points[next_idx];
+
+            // two consecutive points on_curve means line segment
+            if (next_point.on_curve) {
                 try segments.append(.{ .line = .{
-                    .start_point = .{
-                        .x = x_coords[point_idx],
-                        .y = y_coords[point_idx],
-                    },
-                    .end_point = .{
-                        .x = x_coords[start_point_idx],
-                        .y = y_coords[start_point_idx],
-                    },
+                    .start_point = .{ .x = point.x, .y = point.y },
+                    .end_point = .{ .x = next_point.x, .y = next_point.y },
                 } });
                 point_idx += 1;
                 continue;
             }
 
-            const next_is_on_curve = (point_flags[point_idx + 1] & 0x01) != 0;
-
-            // two consecutive points with on_curve set to true means we
-            // have a line segment
-            if (next_is_on_curve) {
-                try segments.append(.{ .line = .{
-                    .start_point = .{
-                        .x = x_coords[point_idx],
-                        .y = y_coords[point_idx],
-                    },
-                    .end_point = .{
-                        .x = x_coords[point_idx + 1],
-                        .y = y_coords[point_idx + 1],
-                    },
-                } });
-                point_idx += 1;
-                continue;
-            }
-
-            // on_curve, followed by not on_curve as the last point of the contour
-            // means we have quadratic bezier curve whose final control point
-            // is the starting point of the contour. this closes the contour.
-            if (point_idx + 2 == end_points[contour_idx]) {
-                try segments.append(.{ .curve = .{
-                    .start_point = .{
-                        .x = x_coords[point_idx],
-                        .y = y_coords[point_idx],
-                    },
-                    .control_point = .{
-                        .x = x_coords[point_idx + 1],
-                        .y = y_coords[point_idx + 1],
-                    },
-                    .end_point = .{
-                        .x = x_coords[start_point_idx],
-                        .y = y_coords[start_point_idx],
-                    },
-                } });
-                point_idx += 2;
-                continue;
-            }
-
-            const next_next_is_on_curve = (point_flags[point_idx + 2] & 0x01) != 0;
-            std.debug.assert(next_next_is_on_curve);
+            const next_next_idx = (((point_idx + 2) - start_point_idx) % contour_points) + start_point_idx;
+            const next_next_point = points[next_next_idx];
+            std.debug.assert(next_next_point.on_curve);
 
             try segments.append(.{ .curve = .{
-                .start_point = .{
-                    .x = x_coords[point_idx],
-                    .y = y_coords[point_idx],
-                },
-                .control_point = .{
-                    .x = x_coords[point_idx + 1],
-                    .y = y_coords[point_idx + 1],
-                },
-                .end_point = .{
-                    .x = x_coords[point_idx + 2],
-                    .y = y_coords[point_idx + 2],
-                },
+                .start_point = .{ .x = point.x, .y = point.y },
+                .control_point = .{ .x = next_point.x, .y = next_point.y },
+                .end_point = .{ .x = next_next_point.x, .y = next_next_point.y },
             } });
-            point_idx += 3;
+            point_idx += 2;
+
+            //const on_curve = (point_flags[point_idx] & 0x01) != 0;
+            //std.debug.assert(on_curve);
+
+            //// if the last point is on_curve then it's a line segment that
+            //// connects back to the first point and closes the contour
+            //if (point_idx == end_points[contour_idx]) {
+            //    try segments.append(.{ .line = .{
+            //        .start_point = .{
+            //            .x = x_coords[point_idx],
+            //            .y = y_coords[point_idx],
+            //        },
+            //        .end_point = .{
+            //            .x = x_coords[start_point_idx],
+            //            .y = y_coords[start_point_idx],
+            //        },
+            //    } });
+            //    point_idx += 1;
+            //    continue;
+            //}
+
+            //const next_is_on_curve = (point_flags[point_idx + 1] & 0x01) != 0;
+
+            //// two consecutive points with on_curve set to true means we
+            //// have a line segment
+            //if (next_is_on_curve) {
+            //    try segments.append(.{ .line = .{
+            //        .start_point = .{
+            //            .x = x_coords[point_idx],
+            //            .y = y_coords[point_idx],
+            //        },
+            //        .end_point = .{
+            //            .x = x_coords[point_idx + 1],
+            //            .y = y_coords[point_idx + 1],
+            //        },
+            //    } });
+            //    point_idx += 1;
+            //    continue;
+            //}
+
+            //// on_curve, followed by not on_curve as the last point of the contour
+            //// means we have quadratic bezier curve whose final control point
+            //// is the starting point of the contour. this closes the contour.
+            //if (point_idx + 2 == end_points[contour_idx]) {
+            //    try segments.append(.{ .curve = .{
+            //        .start_point = .{
+            //            .x = x_coords[point_idx],
+            //            .y = y_coords[point_idx],
+            //        },
+            //        .control_point = .{
+            //            .x = x_coords[point_idx + 1],
+            //            .y = y_coords[point_idx + 1],
+            //        },
+            //        .end_point = .{
+            //            .x = x_coords[start_point_idx],
+            //            .y = y_coords[start_point_idx],
+            //        },
+            //    } });
+            //    point_idx += 2;
+            //    continue;
+            //}
+
+            //const next_next_is_on_curve = (point_flags[point_idx + 2] & 0x01) != 0;
+            //std.debug.assert(next_next_is_on_curve);
+
+            //try segments.append(.{ .curve = .{
+            //    .start_point = .{
+            //        .x = x_coords[point_idx],
+            //        .y = y_coords[point_idx],
+            //    },
+            //    .control_point = .{
+            //        .x = x_coords[point_idx + 1],
+            //        .y = y_coords[point_idx + 1],
+            //    },
+            //    .end_point = .{
+            //        .x = x_coords[point_idx + 2],
+            //        .y = y_coords[point_idx + 2],
+            //    },
+            //} });
+            //point_idx += 3;
         }
 
         contour.segments = segments.toOwnedSlice();
@@ -432,7 +504,7 @@ pub fn loadTTF(allocator: Allocator, filepath: []const u8) !Glyph {
             }
             std.debug.print("  ]\n", .{});
 
-            if (glyph_idx == 4) {
+            if (glyph_idx == 25) {
                 const g = try decodeGlyph(allocator, glyph_data);
                 std.debug.print("\n", .{});
                 std.debug.print("glyph using decoded fn: \n", .{});
