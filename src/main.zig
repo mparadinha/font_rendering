@@ -23,8 +23,8 @@ pub fn main() anyerror!void {
 
     const font = @import("font.zig");
     const glyph = try font.loadTTF(gpa, "VictorMono-Regular.ttf");
-    defer glyph.free(gpa);
-    //if (true) return;
+    //defer glyph.free(gpa);
+    if (true) return;
 
     var width: u32 = 800;
     var height: u32 = 800;
@@ -140,6 +140,7 @@ pub fn main() anyerror!void {
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
         font_shader.bind();
+        font_shader.set("viewport_size", vec2{ @intToFloat(f32, width), @intToFloat(f32, height) });
         font_shader.set("zoom_mult", zoom_mult);
         font_shader.set("pan_offset", cumm_offset + pan_offset);
         font_shader.set("xmin", @intCast(i32, glyph.xmin));
