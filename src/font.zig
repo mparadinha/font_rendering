@@ -258,8 +258,14 @@ pub fn loadTTF(allocator: Allocator, filepath: []const u8) !Glyph {
         if (std.mem.eql(u8, tag, "maxp")) maxp_loc = filepos;
     }
 
-    const num_glyphs = if (maxp_loc) |loc| std.mem.readIntSliceBig(u16, ttf_data[loc + 4 .. loc + 6]) else return LoadError.NoMaxpTable;
-    std.debug.print("num_glyphs = {}\n", .{num_glyphs});
+    var num_glyphs: u16 = 0;
+    if (maxp_loc) |loc| {
+        num_glyphs = std.mem.readIntSliceBig(u16, ttf_data[loc + 4 .. loc + 6]);
+        std.debug.print("num_glyphs = {}\n", .{num_glyphs});
+        const offset = loc + 4 + 13 * @sizeOf(u16);
+        const max_compound_depth = std.mem.readIntSliceBig(u16, ttf_data[offset .. offset + 2]);
+        std.debug.print("max_compound_depth = {}\n", .{max_compound_depth});
+    } else return LoadError.NoMaxpTable;
 
     var index_to_loc_format: usize = undefined;
 
@@ -298,240 +304,240 @@ pub fn loadTTF(allocator: Allocator, filepath: []const u8) !Glyph {
 
     var g: Glyph = undefined;
 
-    //if (glyf_loc) |loc| {
-    //    var compound_glyphs: usize = 0;
-    //    for (glyph_locs.items) |glyph, glyph_idx| {
-    //        std.debug.print("glyph #{}: offset={}, size={}\n", .{ glyph_idx, glyph.offset, glyph.size });
-    //        if (glyph.size == 0) continue;
+    if (glyf_loc) |loc| {
+        var compound_glyphs: usize = 0;
+        for (glyph_locs.items) |glyph, glyph_idx| {
+            std.debug.print("glyph #{}: offset={}, size={}\n", .{ glyph_idx, glyph.offset, glyph.size });
+            if (glyph.size == 0) continue;
 
-    //        const glyph_data = ttf_data[loc + glyph.offset .. loc + glyph.offset + glyph.size];
-    //        var glyph_stream = std.io.fixedBufferStream(glyph_data);
-    //        const glyph_reader = glyph_stream.reader();
+            const glyph_data = ttf_data[loc + glyph.offset .. loc + glyph.offset + glyph.size];
+            var glyph_stream = std.io.fixedBufferStream(glyph_data);
+            const glyph_reader = glyph_stream.reader();
 
-    //        const num_contours = try glyph_reader.readIntBig(i16);
-    //        std.debug.print("  # of contours: {}\n", .{num_contours});
-    //        const xmin = try glyph_reader.readIntBig(i16);
-    //        const ymin = try glyph_reader.readIntBig(i16);
-    //        const xmax = try glyph_reader.readIntBig(i16);
-    //        const ymax = try glyph_reader.readIntBig(i16);
-    //        std.debug.print("  xmin: {}, ymin: {} (FUnits)\n", .{ xmin, ymin });
-    //        std.debug.print("  xmax: {}, ymax: {} (FUnits)\n", .{ xmax, ymax });
+            const num_contours = try glyph_reader.readIntBig(i16);
+            std.debug.print("  # of contours: {}\n", .{num_contours});
+            const xmin = try glyph_reader.readIntBig(i16);
+            const ymin = try glyph_reader.readIntBig(i16);
+            const xmax = try glyph_reader.readIntBig(i16);
+            const ymax = try glyph_reader.readIntBig(i16);
+            std.debug.print("  xmin: {}, ymin: {} (FUnits)\n", .{ xmin, ymin });
+            std.debug.print("  xmax: {}, ymax: {} (FUnits)\n", .{ xmax, ymax });
 
-    //        // TODO: deal with compound glyphs
-    //        //std.debug.assert(num_contours >= 0);
-    //        if (num_contours < 0) {
-    //            std.debug.print("  glyph idx={} is compound!\n", .{glyph_idx});
-    //            compound_glyphs += 1;
+            // TODO: deal with compound glyphs
+            //std.debug.assert(num_contours >= 0);
+            if (num_contours < 0) {
+                std.debug.print("  glyph idx={} is compound!\n", .{glyph_idx});
+                compound_glyphs += 1;
 
-    //            var done = false;
-    //            var has_instructions = false;
-    //            while (!done) {
-    //                const comp_flags = try glyph_reader.readIntBig(u16);
-    //                const comp_glyph_idx = try glyph_reader.readIntBig(u16);
-    //                std.debug.print("  flags = 0x{x:0>4}\n", .{comp_flags});
-    //                std.debug.print("  glyphIndex = {}\n", .{comp_glyph_idx});
+                var done = false;
+                var has_instructions = false;
+                while (!done) {
+                    const comp_flags = try glyph_reader.readIntBig(u16);
+                    const comp_glyph_idx = try glyph_reader.readIntBig(u16);
+                    std.debug.print("  flags = 0x{x:0>4}\n", .{comp_flags});
+                    std.debug.print("  glyphIndex = {}\n", .{comp_glyph_idx});
 
-    //                const args_are_words = (comp_flags & 0x0001) != 0;
-    //                const args_are_values = (comp_flags & 0x0002) != 0;
-    //                const simple_scale = (comp_flags & 0x0008) != 0;
-    //                const more_comps = (comp_flags & 0x0020) != 0;
-    //                const xy_scale = (comp_flags & 0x0040) != 0;
-    //                const two_by_two_scale = (comp_flags & 0x0080) != 0;
-    //                const have_instructions = (comp_flags & 0x0100) != 0;
-    //                //const use_metrics = (comp_flags & 0x0200) != 0;
-    //                //const overlap_compound = (comp_flags & 0x0400) != 0;
+                    const args_are_words = (comp_flags & 0x0001) != 0;
+                    const args_are_values = (comp_flags & 0x0002) != 0;
+                    const simple_scale = (comp_flags & 0x0008) != 0;
+                    const more_comps = (comp_flags & 0x0020) != 0;
+                    const xy_scale = (comp_flags & 0x0040) != 0;
+                    const two_by_two_scale = (comp_flags & 0x0080) != 0;
+                    const have_instructions = (comp_flags & 0x0100) != 0;
+                    //const use_metrics = (comp_flags & 0x0200) != 0;
+                    //const overlap_compound = (comp_flags & 0x0400) != 0;
 
-    //                std.debug.print("  args_are_words = {}\n", .{args_are_words});
-    //                std.debug.print("  args_are_values = {}\n", .{args_are_values});
-    //                std.debug.print("  simple_scale = {}\n", .{simple_scale});
-    //                std.debug.print("  more_comps = {}\n", .{more_comps});
-    //                std.debug.print("  xy_scale = {}\n", .{xy_scale});
-    //                std.debug.print("  two_by_two_scale = {}\n", .{two_by_two_scale});
-    //                std.debug.print("  have_instructions = {}\n", .{have_instructions});
-    //                //std.debug.print("  use_metrics = {}\n", .{use_metrics});
-    //                //std.debug.print("  overlap_compound = {}\n", .{overlap_compound});
+                    std.debug.print("    args_are_words = {}\n", .{args_are_words});
+                    std.debug.print("    args_are_values = {}\n", .{args_are_values});
+                    std.debug.print("    simple_scale = {}\n", .{simple_scale});
+                    std.debug.print("    more_comps = {}\n", .{more_comps});
+                    std.debug.print("    xy_scale = {}\n", .{xy_scale});
+                    std.debug.print("    two_by_two_scale = {}\n", .{two_by_two_scale});
+                    std.debug.print("    have_instructions = {}\n", .{have_instructions});
+                    //std.debug.print("    use_metrics = {}\n", .{use_metrics});
+                    //std.debug.print("    overlap_compound = {}\n", .{overlap_compound});
 
-    //                if (args_are_words) {
-    //                    if (args_are_values) {
-    //                        const arg1 = glyph_reader.readIntBig(i16);
-    //                        const arg2 = glyph_reader.readIntBig(i16);
-    //                        std.debug.print("  arg1={}, arg2={}\n", .{ arg1, arg2 });
-    //                    } else {
-    //                        const arg1 = glyph_reader.readIntBig(u16);
-    //                        const arg2 = glyph_reader.readIntBig(u16);
-    //                        std.debug.print("  arg1={}, arg2={}\n", .{ arg1, arg2 });
-    //                    }
-    //                } else {
-    //                    if (args_are_values) {
-    //                        const arg1 = glyph_reader.readIntBig(i8);
-    //                        const arg2 = glyph_reader.readIntBig(i8);
-    //                        std.debug.print("  arg1={}, arg2={}\n", .{ arg1, arg2 });
-    //                    } else {
-    //                        const arg1 = glyph_reader.readIntBig(u8);
-    //                        const arg2 = glyph_reader.readIntBig(u8);
-    //                        std.debug.print("  arg1={}, arg2={}\n", .{ arg1, arg2 });
-    //                    }
-    //                }
+                    if (args_are_words) {
+                        if (args_are_values) {
+                            const arg1 = glyph_reader.readIntBig(i16);
+                            const arg2 = glyph_reader.readIntBig(i16);
+                            std.debug.print("    arg1={}, arg2={}\n", .{ arg1, arg2 });
+                        } else {
+                            const arg1 = glyph_reader.readIntBig(u16);
+                            const arg2 = glyph_reader.readIntBig(u16);
+                            std.debug.print("    arg1={}, arg2={}\n", .{ arg1, arg2 });
+                        }
+                    } else {
+                        if (args_are_values) {
+                            const arg1 = glyph_reader.readIntBig(i8);
+                            const arg2 = glyph_reader.readIntBig(i8);
+                            std.debug.print("    arg1={}, arg2={}\n", .{ arg1, arg2 });
+                        } else {
+                            const arg1 = glyph_reader.readIntBig(u8);
+                            const arg2 = glyph_reader.readIntBig(u8);
+                            std.debug.print("    arg1={}, arg2={}\n", .{ arg1, arg2 });
+                        }
+                    }
 
-    //                if (simple_scale) {
-    //                    const scale = glyph_reader.readIntBig(i16);
-    //                    std.debug.print("  simple scale = {}\n", .{scale});
-    //                } else if (xy_scale) {
-    //                    const xscale = glyph_reader.readIntBig(u16);
-    //                    const yscale = glyph_reader.readIntBig(u16);
-    //                    std.debug.print("  xy scale = (0x{x:0>4}, 0x{x:0>4})\n", .{ xscale, yscale });
-    //                } else if (two_by_two_scale) {
-    //                    const xscale = glyph_reader.readIntBig(u16);
-    //                    const scale01 = glyph_reader.readIntBig(u16);
-    //                    const scale10 = glyph_reader.readIntBig(u16);
-    //                    const yscale = glyph_reader.readIntBig(u16);
-    //                    std.debug.print("  2x2 scale: x=0x{x:0>4}, 01=0x{x:0>4}, 10=0x{x:0>4}, y=0x{x:0>4}\n", .{ xscale, scale01, scale10, yscale });
-    //                } else {
-    //                    std.debug.print("  scale = 1.0 (no scale information present)\n", .{});
-    //                }
+                    if (simple_scale) {
+                        const scale = glyph_reader.readIntBig(i16);
+                        std.debug.print("    simple scale = {}\n", .{scale});
+                    } else if (xy_scale) {
+                        const xscale = glyph_reader.readIntBig(u16);
+                        const yscale = glyph_reader.readIntBig(u16);
+                        std.debug.print("    xy scale = (0x{x:0>4}, 0x{x:0>4})\n", .{ xscale, yscale });
+                    } else if (two_by_two_scale) {
+                        const xscale = glyph_reader.readIntBig(u16);
+                        const scale01 = glyph_reader.readIntBig(u16);
+                        const scale10 = glyph_reader.readIntBig(u16);
+                        const yscale = glyph_reader.readIntBig(u16);
+                        std.debug.print("    2x2 scale: x=0x{x:0>4}, 01=0x{x:0>4}, 10=0x{x:0>4}, y=0x{x:0>4}\n", .{ xscale, scale01, scale10, yscale });
+                    } else {
+                        std.debug.print("    scale = 1.0 (no scale information present)\n", .{});
+                    }
 
-    //                // transformation parameters
-    //                //const m: f32 = 0;
-    //                //const n: f32 = 0;
-    //                //const a: f32 = 0;
-    //                //const b: f32 = 0;
-    //                //const c: f32 = 0;
-    //                //const d: f32 = 0;
-    //                //const e: f32 = 0;
-    //                //const f: f32 = 0;
+                    // transformation parameters
+                    //const m: f32 = 0;
+                    //const n: f32 = 0;
+                    //const a: f32 = 0;
+                    //const b: f32 = 0;
+                    //const c: f32 = 0;
+                    //const d: f32 = 0;
+                    //const e: f32 = 0;
+                    //const f: f32 = 0;
 
-    //                if (!more_comps) {
-    //                    done = true;
-    //                    has_instructions = have_instructions;
-    //                }
-    //            }
+                    if (!more_comps) {
+                        done = true;
+                        has_instructions = have_instructions;
+                    }
+                }
 
-    //            if (has_instructions) {
-    //                const n_instrs = try glyph_reader.readIntBig(u16);
-    //                try glyph_reader.skipBytes(n_instrs, .{});
-    //            }
+                if (has_instructions) {
+                    const n_instrs = try glyph_reader.readIntBig(u16);
+                    try glyph_reader.skipBytes(n_instrs, .{});
+                }
 
-    //            continue;
-    //        }
+                continue;
+            }
 
-    //        var total_num_points: u16 = 0;
+            var total_num_points: u16 = 0;
 
-    //        std.debug.print("  end pts of contours: [", .{});
-    //        var contour: usize = 0;
-    //        while (contour < num_contours) : (contour += 1) {
-    //            const end_pt = try glyph_reader.readIntBig(u16);
-    //            const str = if (contour == num_contours - 1) "]\n" else ", ";
-    //            std.debug.print("{}{s}", .{ end_pt, str });
-    //            // TODO: report this bug to zig compiler repo (might be fixed in stage2):
-    //            // this prints the "]\n" twice:
-    //            //std.debug.print("{}{s}", .{ end_pt, if (contour == num_contours - 1) "]\n" else ", " });
-    //            // but if we put it in a variable it works:
-    //            //const str = if (contour == num_contours - 1) "]\n" else ", ";
-    //            //std.debug.print("{}{s}", .{ end_pt, str });
+            std.debug.print("  end pts of contours: [", .{});
+            var contour: usize = 0;
+            while (contour < num_contours) : (contour += 1) {
+                const end_pt = try glyph_reader.readIntBig(u16);
+                const str = if (contour == num_contours - 1) "]\n" else ", ";
+                std.debug.print("{}{s}", .{ end_pt, str });
+                // TODO: report this bug to zig compiler repo (might be fixed in stage2):
+                // this prints the "]\n" twice:
+                //std.debug.print("{}{s}", .{ end_pt, if (contour == num_contours - 1) "]\n" else ", " });
+                // but if we put it in a variable it works:
+                //const str = if (contour == num_contours - 1) "]\n" else ", ";
+                //std.debug.print("{}{s}", .{ end_pt, str });
 
-    //            if (contour == num_contours - 1) total_num_points = end_pt + 1;
-    //        }
+                if (contour == num_contours - 1) total_num_points = end_pt + 1;
+            }
 
-    //        const instructions_len = try glyph_reader.readIntBig(u16);
-    //        std.debug.print("  instructions: [", .{});
-    //        var insts: usize = 0;
-    //        while (insts < instructions_len) : (insts += 1) {
-    //            const inst = try glyph_reader.readByte();
-    //            const str = if (insts == instructions_len - 1) "]\n" else ", ";
-    //            std.debug.print("0x{x:0>2}{s}", .{ inst, str });
-    //        }
+            const instructions_len = try glyph_reader.readIntBig(u16);
+            std.debug.print("  instructions (len={}): [", .{instructions_len});
+            var insts: usize = 0;
+            while (insts < instructions_len) : (insts += 1) {
+                const inst = try glyph_reader.readByte();
+                const str = if (insts == instructions_len - 1) "]\n" else ", ";
+                std.debug.print("0x{x:0>2}{s}", .{ inst, str });
+            }
 
-    //        std.debug.print("  # of points: {}\n", .{total_num_points});
+            std.debug.print("  # of points: {}\n", .{total_num_points});
 
-    //        var pt_flags = try allocator.alloc(u8, total_num_points);
-    //        defer allocator.free(pt_flags);
-    //        var flags_read: usize = 0;
-    //        while (flags_read < pt_flags.len) {
-    //            const flags = try glyph_reader.readByte();
-    //            pt_flags[flags_read] = flags;
-    //            flags_read += 1;
-    //            if ((flags & 0x08) != 0) {
-    //                const repeat = try glyph_reader.readByte();
-    //                var done: usize = 0;
-    //                while (done < repeat) : (done += 1) {
-    //                    pt_flags[flags_read] = flags;
-    //                    flags_read += 1;
-    //                }
-    //            }
-    //        }
-    //        std.debug.print("  flags: [", .{});
-    //        for (pt_flags) |flags, idx| {
-    //            const str = if (idx == pt_flags.len - 1) "]\n" else ", ";
-    //            std.debug.print("0b{b:0>6}{s}", .{ flags, str });
-    //        }
+            var pt_flags = try allocator.alloc(u8, total_num_points);
+            defer allocator.free(pt_flags);
+            var flags_read: usize = 0;
+            while (flags_read < pt_flags.len) {
+                const flags = try glyph_reader.readByte();
+                pt_flags[flags_read] = flags;
+                flags_read += 1;
+                if ((flags & 0x08) != 0) {
+                    const repeat = try glyph_reader.readByte();
+                    var done: usize = 0;
+                    while (done < repeat) : (done += 1) {
+                        pt_flags[flags_read] = flags;
+                        flags_read += 1;
+                    }
+                }
+            }
+            std.debug.print("  flags: [", .{});
+            for (pt_flags) |flags, idx| {
+                const str = if (idx == pt_flags.len - 1) "]\n" else ", ";
+                std.debug.print("0b{b:0>6}{s}", .{ flags, str });
+            }
 
-    //        const Point = struct {
-    //            on_curve: bool,
-    //            x: i16,
-    //            y: i16,
-    //        };
+            const Point = struct {
+                on_curve: bool,
+                x: i16,
+                y: i16,
+            };
 
-    //        var points = try allocator.alloc(Point, total_num_points);
-    //        defer allocator.free(points);
-    //        for (pt_flags) |flag, idx| points[idx].on_curve = (flag & 0x01) != 0;
-    //        for (pt_flags) |flag, idx| {
-    //            const xshort = (flag & 0x02) != 0;
-    //            const xsame = (flag & 0x10) != 0;
-    //            const last_x = if (idx == 0) 0 else points[idx - 1].x;
-    //            if (xshort) {
-    //                const byte = try glyph_reader.readByte();
-    //                const delta = if (xsame) @intCast(i16, byte) else -@intCast(i16, byte);
-    //                points[idx].x = last_x + delta;
-    //            } else {
-    //                if (xsame) {
-    //                    points[idx].x = last_x;
-    //                } else {
-    //                    const delta = try glyph_reader.readIntBig(i16);
-    //                    points[idx].x = last_x + delta;
-    //                }
-    //            }
-    //        }
-    //        std.debug.print("\n", .{});
-    //        for (pt_flags) |flag, idx| {
-    //            const yshort = (flag & 0x04) != 0;
-    //            const ysame = (flag & 0x20) != 0;
-    //            const last_y = if (idx == 0) 0 else points[idx - 1].y;
-    //            if (yshort) {
-    //                const byte = try glyph_reader.readByte();
-    //                const delta = if (ysame) @intCast(i16, byte) else -@intCast(i16, byte);
-    //                points[idx].y = last_y + delta;
-    //            } else {
-    //                if (ysame) {
-    //                    points[idx].y = last_y;
-    //                } else {
-    //                    const delta = try glyph_reader.readIntBig(i16);
-    //                    points[idx].y = last_y + delta;
-    //                }
-    //            }
-    //        }
-    //        std.debug.print("  points: [\n", .{});
-    //        for (points) |pt| {
-    //            std.debug.print("    x={: >5}, y={: >5}, on_curve={}\n", .{ pt.x, pt.y, pt.on_curve });
-    //        }
-    //        std.debug.print("  ]\n", .{});
-    //    }
-    //    std.debug.print("there were {} compound glyphs skipped (out of {} total glyphs)\n", .{ compound_glyphs, glyph_locs.items.len });
+            var points = try allocator.alloc(Point, total_num_points);
+            defer allocator.free(points);
+            for (pt_flags) |flag, idx| points[idx].on_curve = (flag & 0x01) != 0;
+            for (pt_flags) |flag, idx| {
+                const xshort = (flag & 0x02) != 0;
+                const xsame = (flag & 0x10) != 0;
+                const last_x = if (idx == 0) 0 else points[idx - 1].x;
+                if (xshort) {
+                    const byte = try glyph_reader.readByte();
+                    const delta = if (xsame) @intCast(i16, byte) else -@intCast(i16, byte);
+                    points[idx].x = last_x + delta;
+                } else {
+                    if (xsame) {
+                        points[idx].x = last_x;
+                    } else {
+                        const delta = try glyph_reader.readIntBig(i16);
+                        points[idx].x = last_x + delta;
+                    }
+                }
+            }
+            std.debug.print("\n", .{});
+            for (pt_flags) |flag, idx| {
+                const yshort = (flag & 0x04) != 0;
+                const ysame = (flag & 0x20) != 0;
+                const last_y = if (idx == 0) 0 else points[idx - 1].y;
+                if (yshort) {
+                    const byte = try glyph_reader.readByte();
+                    const delta = if (ysame) @intCast(i16, byte) else -@intCast(i16, byte);
+                    points[idx].y = last_y + delta;
+                } else {
+                    if (ysame) {
+                        points[idx].y = last_y;
+                    } else {
+                        const delta = try glyph_reader.readIntBig(i16);
+                        points[idx].y = last_y + delta;
+                    }
+                }
+            }
+            std.debug.print("  points: [\n", .{});
+            for (points) |pt| {
+                std.debug.print("    x={: >5}, y={: >5}, on_curve={}\n", .{ pt.x, pt.y, pt.on_curve });
+            }
+            std.debug.print("  ]\n", .{});
+        }
+        std.debug.print("there were {} compound glyphs skipped (out of {} total glyphs)\n", .{ compound_glyphs, glyph_locs.items.len });
 
-    //    const glyph = glyph_locs.items[25];
-    //    const glyph_data = ttf_data[loc + glyph.offset .. loc + glyph.offset + glyph.size];
-    //    g = try decodeGlyph(allocator, glyph_data);
-    //    std.debug.print("\n", .{});
-    //    std.debug.print("glyph using decoded fn: \n", .{});
-    //    for (g.contours) |ct, c_idx| {
-    //        std.debug.print("  contour #{}:\n", .{c_idx});
-    //        for (ct.segments) |s| {
-    //            switch (s) {
-    //                .line => |l| std.debug.print("    line: start={}, end={}\n", .{ l.start_point, l.end_point }),
-    //                .curve => |c| std.debug.print("    curve: start={}, control={}, end={}\n", .{ c.start_point, c.control_point, c.end_point }),
-    //            }
-    //        }
-    //    }
-    //} else return LoadError.NoGlyphTable;
+        const glyph = glyph_locs.items[25];
+        const glyph_data = ttf_data[loc + glyph.offset .. loc + glyph.offset + glyph.size];
+        g = try decodeGlyph(allocator, glyph_data);
+        std.debug.print("\n", .{});
+        std.debug.print("glyph using decoded fn: \n", .{});
+        for (g.contours) |ct, c_idx| {
+            std.debug.print("  contour #{}:\n", .{c_idx});
+            for (ct.segments) |s| {
+                switch (s) {
+                    .line => |l| std.debug.print("    line: start={}, end={}\n", .{ l.start_point, l.end_point }),
+                    .curve => |c| std.debug.print("    curve: start={}, control={}, end={}\n", .{ c.start_point, c.control_point, c.end_point }),
+                }
+            }
+        }
+    } else return LoadError.NoGlyphTable;
 
     if (cmap_loc) |loc| {
         std.debug.print("'cmap' table:\n", .{});

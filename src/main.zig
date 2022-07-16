@@ -23,8 +23,22 @@ pub fn main() anyerror!void {
 
     const font = @import("font.zig");
     const glyph = try font.loadTTF(gpa, "VictorMono-Regular.ttf");
-    //defer glyph.free(gpa);
-    if (true) return;
+    defer glyph.free(gpa);
+
+    const font_v2 = try @import("font_v2.zig").init(gpa, "VictorMono-Regular.ttf");
+    defer font_v2.deinit(gpa);
+    //for (font_v2.curve_points) |pt| std.debug.print("({: >5}, {: >5})\n", .{ pt.x, pt.y });
+    //for (font_v2.glyphs) |g| std.debug.print("pt off={}, n_pts={}\n", .{ g.points_offset, g.n_points });
+    const g_idx = 2;
+    const g = font_v2.glyphs[g_idx];
+    std.debug.print("points for glyph #{}\n", .{g_idx});
+    for (font_v2.curve_points[g.points_offset .. g.points_offset + g.n_points]) |pt, i| {
+        std.debug.print("#{}: ({: >5}, {: >5})\n", .{ i, pt.x, pt.y });
+    }
+    std.debug.print("points_offset={}\n", .{g.points_offset});
+    std.debug.print("n_points={}\n", .{g.n_points});
+    std.debug.print("contour_n_curves={d}\n", .{g.contour_n_curves});
+    //if (true) return;
 
     var width: u32 = 800;
     var height: u32 = 800;
@@ -40,7 +54,8 @@ pub fn main() anyerror!void {
     std.log.info("{s}", .{gl.getString(gl.VERSION)});
 
     // GL state that we never change
-    gl.clearColor(1, 0.9, 0.8, 1);
+    gl.clearColor(1, 0.6, 0.8, 1);
+    //gl.clearColor(0, 0, 0, 0);
     gl.enable(gl.CULL_FACE);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -53,14 +68,14 @@ pub fn main() anyerror!void {
     var frame_num: u64 = 0;
     var frame_times = [_]f32{0} ** 100;
 
-    var font_shader = gfx.Shader.from_files(gpa, "font_shader");
+    var font_shader = gfx.Shader.from_files(gpa, "font_v2");
     defer font_shader.deinit();
     // zig fmt: off
     const quad_data = [_]f32{
-        -0.5, -0.5,   0, 0,
-         0.5, -0.5,   1, 0,
-         0.5,  0.5,   1, 1,
-        -0.5,  0.5,   0, 1,
+        -0.5, -0.5,   @intToFloat(f32, g.xmin), @intToFloat(f32, g.ymin),
+         0.5, -0.5,   @intToFloat(f32, g.xmax), @intToFloat(f32, g.ymin),
+         0.5,  0.5,   @intToFloat(f32, g.xmax), @intToFloat(f32, g.ymax),
+        -0.5,  0.5,   @intToFloat(f32, g.xmin), @intToFloat(f32, g.ymax),
     };
     // zig fmt: on
     const quad_indices = [_]u32{ 0, 1, 2, 0, 2, 3 };
@@ -69,34 +84,29 @@ pub fn main() anyerror!void {
         .{ .n_elems = 2 },
     });
     defer quad_text_mesh.deinit();
-    var glyph_tex_data = std.ArrayList(i16).init(gpa);
-    defer glyph_tex_data.deinit();
-    for (glyph.contours) |cnt| {
-        try glyph_tex_data.append(@intCast(i16, cnt.segments.len));
-        for (cnt.segments) |s| {
-            switch (s) {
-                .line => |line| {
-                    try glyph_tex_data.append(0);
-                    try glyph_tex_data.append(line.start_point.x);
-                    try glyph_tex_data.append(line.start_point.y);
-                    try glyph_tex_data.append(line.end_point.x);
-                    try glyph_tex_data.append(line.end_point.y);
-                },
-                .curve => |curve| {
-                    try glyph_tex_data.append(1);
-                    try glyph_tex_data.append(curve.start_point.x);
-                    try glyph_tex_data.append(curve.start_point.y);
-                    try glyph_tex_data.append(curve.control_point.x);
-                    try glyph_tex_data.append(curve.control_point.y);
-                    try glyph_tex_data.append(curve.end_point.x);
-                    try glyph_tex_data.append(curve.end_point.y);
-                },
-            }
-        }
-    }
-    const texture = dataTexture(glyph_tex_data.items);
+    var data_buf: []i16 = undefined;
+    data_buf.ptr = @ptrCast([*]i16, font_v2.curve_points.ptr);
+    data_buf.len = font_v2.curve_points.len * 2;
+    const texture = dataTexture(data_buf);
+    const outline_shader = gfx.Shader.from_srcs(gpa, "outline", .{
+        .vertex = 
+        \\#version 330 core
+        \\layout (location = 0) in vec2 pos;
+        \\uniform float zoom_mult;
+        \\uniform vec2 pan_offset;
+        \\void main() { gl_Position = vec4((zoom_mult * pos) + pan_offset, 0, 1); }
+        \\
+        ,
+        .fragment = 
+        \\#version 330 core
+        \\out vec4 FragColor;
+        \\void main() { FragColor = vec4(1); }
+        \\
+        ,
+    });
+    defer outline_shader.deinit();
 
-    var zoom_mult: f32 = 1;
+    var zoom_mult: f32 = 2;
     var panning_view = false;
     var cumm_offset = math.zeroes(vec2);
     var pan_offset = math.zeroes(vec2);
@@ -118,7 +128,11 @@ pub fn main() anyerror!void {
                     cumm_offset += pan_offset;
                     pan_offset = math.zeroes(vec2);
                 },
-                .MouseScroll => |scroll| zoom_mult += scroll.y / 10,
+                .MouseScroll => |scroll| {
+                    const increase_mult = 1 + scroll.y * 0.25;
+                    cumm_offset = math.times(cumm_offset, increase_mult);
+                    zoom_mult *= increase_mult;
+                },
                 else => remove = false,
             }
             if (remove) window.event_queue.removeCurrent();
@@ -139,18 +153,35 @@ pub fn main() anyerror!void {
         // start rendering
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
+        //font_shader.bind();
+        //font_shader.set("viewport_size", vec2{ @intToFloat(f32, width), @intToFloat(f32, height) });
+        //font_shader.set("zoom_mult", zoom_mult);
+        //font_shader.set("pan_offset", cumm_offset + pan_offset);
+        //font_shader.set("xmin", @intCast(i32, glyph.xmin));
+        //font_shader.set("ymin", @intCast(i32, glyph.ymin));
+        //font_shader.set("xmax", @intCast(i32, glyph.xmax));
+        //font_shader.set("ymax", @intCast(i32, glyph.ymax));
+        //font_shader.set("n_contours", @intCast(u32, glyph.contours.len));
+        //font_shader.set("texture_data", @as(i32, 0));
+        //texture.bind(0);
+        //quad_text_mesh.draw();
+
         font_shader.bind();
-        font_shader.set("viewport_size", vec2{ @intToFloat(f32, width), @intToFloat(f32, height) });
         font_shader.set("zoom_mult", zoom_mult);
         font_shader.set("pan_offset", cumm_offset + pan_offset);
-        font_shader.set("xmin", @intCast(i32, glyph.xmin));
-        font_shader.set("ymin", @intCast(i32, glyph.ymin));
-        font_shader.set("xmax", @intCast(i32, glyph.xmax));
-        font_shader.set("ymax", @intCast(i32, glyph.ymax));
-        font_shader.set("n_contours", @intCast(u32, glyph.contours.len));
-        font_shader.set("texture_data", @as(i32, 0));
+        font_shader.set("points_offset", @intCast(i32, g.points_offset));
+        font_shader.set("contour0_n_curves", @intCast(i32, g.contour_n_curves[0]));
+        font_shader.set("contour1_n_curves", @intCast(i32, g.contour_n_curves[1]));
+        font_shader.set("curve_point_data_tex", @as(i32, 0));
         texture.bind(0);
         quad_text_mesh.draw();
+
+        outline_shader.bind();
+        outline_shader.set("zoom_mult", zoom_mult);
+        outline_shader.set("pan_offset", cumm_offset + pan_offset);
+        gl.polygonMode(gl.FRONT_AND_BACK, gl.LINE);
+        quad_text_mesh.draw();
+        gl.polygonMode(gl.FRONT_AND_BACK, gl.FILL);
 
         window.update();
     }

@@ -26,7 +26,12 @@ vec2 point_in_curve(vec2 p0, vec2 p1, vec2 p2, float t) {
     return (1 - 2 * t + t*t) * p0 + 2*t * (1 - t) * p1 + t*t * p2; 
 }
 
+float sat(float value) { return clamp(value, 0, 1); }
+//float f(float value) { return sat((value / ems_per_pixel) + 0.5f); }
+float f(float value) { return sat(value / ems_per_pixel); }
+
 // ray (for instersection) always starts at em_pos and goes in +x direction
+// (unless it a xxxxVert function which does +y rays)
 // clockwise winding intersection is +1, counter-clockwise -1, no intersection 0
 
 float windingIntersectLine(vec2 em_pos, vec2 start, vec2 end) {
@@ -39,8 +44,22 @@ float windingIntersectLine(vec2 em_pos, vec2 start, vec2 end) {
     if (intersect_pt.x < em_pos.x) return 0.0f;
 
     if (t < 0 || t > 1) return 0.0f;
-    if (start.y > end.y) return 1.0f;
-    return -1.0f;
+    if (start.y > end.y) return f(intersect_pt.x - em_pos.x);
+    return -f(intersect_pt.x - em_pos.x);
+}
+
+float windingIntersectLineVert(vec2 em_pos, vec2 start, vec2 end) {
+    // check if ray (in +y direction) is parallel
+    if ((end - start).x == 0) return 0.0f;
+
+    float t = (em_pos.x - start.x) / (end.x - start.x);
+
+    vec2 intersect_pt = start + (end - start) * t;
+    if (intersect_pt.y < em_pos.y) return 0.0f;
+
+    if (t < 0 || t > 1) return 0.0f;
+    if (start.x > end.x) return f(intersect_pt.y - em_pos.y);
+    return -f(intersect_pt.y - em_pos.y);
 }
 
 float windingIntersectCurve(vec2 em_pos, vec2 p0, vec2 p1, vec2 p2) {
@@ -69,7 +88,7 @@ float windingIntersectCurve(vec2 em_pos, vec2 p0, vec2 p1, vec2 p2) {
     if (delta == 0) {
         float t = -b / (2 * a);
         if (t < 0 || t > 1) return 0.0f;
-        return winding;
+        return winding * f(point_in_curve(p0, p1, p2, t).x - em_pos.x);
     }
 
     // 2 solutions
@@ -82,9 +101,51 @@ float windingIntersectCurve(vec2 em_pos, vec2 p0, vec2 p1, vec2 p2) {
     bool sol0_valid = (sol0 >= 0 && sol0 <= 1) && (sol0_x >= em_pos.x);
     bool sol1_valid = (sol1 >= 0 && sol1 <= 1) && (sol1_x >= em_pos.x);
 
-    if (sol0_valid && sol1_valid) return 0.0f;
-    else if (!sol0_valid && !sol1_valid) return 0.0f;
-    else return winding;
+    if (sol0_valid && sol1_valid) {
+        return winding * f(sol0_x - em_pos.x) - winding * f(sol1_x - em_pos.x);
+    } else if (!sol0_valid && !sol1_valid) {
+        return 0.0f;
+    } else {
+        float sol_x = sol0_valid ? sol0_x : sol1_x;
+        return winding * f(sol_x - em_pos.x);
+    }
+}
+
+float windingIntersectCurveVert(vec2 em_pos, vec2 p0, vec2 p1, vec2 p2) {
+    float a = p0.x - 2 * p1.x + p2.x;
+    float b = -2 * (p0.x - p1.x);
+    float c = p0.x - em_pos.x;
+
+    float delta = (b * b) - (4 * a * c);
+
+    if (delta < 0) return 0.0f;
+
+    bool curve_goes_down = (p0.x >= p1.x && p1.x >= p2.x);
+    float winding = curve_goes_down ? 1 : -1;
+
+    if (delta == 0) {
+        float t = -b / (2 * a);
+        if (t < 0 || t > 1) return 0.0f;
+        return winding * f(point_in_curve(p0, p1, p2, t).y - em_pos.y);
+    }
+
+    float sol0 = (-b - sqrt(delta)) / (2 * a);
+    float sol1 = (-b + sqrt(delta)) / (2 * a);
+
+    float sol0_x = point_in_curve(p0, p1, p2, sol0).y;
+    float sol1_x = point_in_curve(p0, p1, p2, sol1).y;
+
+    bool sol0_valid = (sol0 >= 0 && sol0 <= 1) && (sol0_x >= em_pos.y);
+    bool sol1_valid = (sol1 >= 0 && sol1 <= 1) && (sol1_x >= em_pos.y);
+
+    if (sol0_valid && sol1_valid) {
+        return winding * f(sol0_x - em_pos.y) - winding * f(sol1_x - em_pos.y);
+    } else if (!sol0_valid && !sol1_valid) {
+        return 0.0f;
+    } else {
+        float sol_x = sol0_valid ? sol0_x : sol1_x;
+        return winding * f(sol_x - em_pos.y);
+    }
 }
 
 const float basically_pos_inf = 1E30;
@@ -215,32 +276,24 @@ int getData(int idx) { return texelFetch(texture_data, idx, 0).r; }
 float do_contours(vec2 em_pos) {
     float winding_cnt = 0;
 
-    float smallest_dist_to_seg = basically_pos_inf;
-
-    int total_segments = 0;
     int data_idx = 0;
     for (int contour_idx = 0; contour_idx < int(n_contours); contour_idx++) {
         int n_segments = getData(data_idx++);
-        total_segments += n_segments;
         for (int seg_idx = 0; seg_idx < n_segments; seg_idx++) {
             int seg_type = getData(data_idx++);
+            vec2 start = vec2(
+                float(getData(data_idx++)),
+                float(getData(data_idx++))
+            );
             if (seg_type == 0) { // line
-                vec2 start = vec2(
-                    float(getData(data_idx++)),
-                    float(getData(data_idx++))
-                );
                 vec2 end = vec2(
                     float(getData(data_idx++)),
                     float(getData(data_idx++))
                 );
-                winding_cnt += windingIntersectLine(em_pos, start, end);
-                float dist_to_line = distanceToLine(em_pos, start, end);
-                if (dist_to_line < smallest_dist_to_seg) smallest_dist_to_seg = dist_to_line;
+                float intersect_res = windingIntersectLine(em_pos, start, end);
+                intersect_res += -1.0f * windingIntersectLineVert(em_pos, start, end);
+                winding_cnt += intersect_res;
             } else if (seg_type == 1) { // curve
-                vec2 start = vec2(
-                    float(getData(data_idx++)),
-                    float(getData(data_idx++))
-                );
                 vec2 control = vec2(
                     float(getData(data_idx++)),
                     float(getData(data_idx++))
@@ -249,22 +302,14 @@ float do_contours(vec2 em_pos) {
                     float(getData(data_idx++)),
                     float(getData(data_idx++))
                 );
-                winding_cnt += windingIntersectCurve(em_pos, start, control, end);
-                float dist_to_curve = distanceToCurve(em_pos, start, control, end);
-                if (dist_to_curve < smallest_dist_to_seg) smallest_dist_to_seg = dist_to_curve;
+                float intersect_res = windingIntersectCurve(em_pos, start, control, end);
+                intersect_res += -1.0f * windingIntersectCurveVert(em_pos, start, control, end);
+                winding_cnt += intersect_res;
             }
         }
     }
 
-    float dist_in_pixels = smallest_dist_to_seg / ems_per_pixel;
-
-    if (winding_cnt == 0) {
-        if (dist_in_pixels < 1.0f) return pow(1.0f - dist_in_pixels, 1/3);
-        else return 0.0f;
-    } else {
-        if (dist_in_pixels < 1.0f) return pow(dist_in_pixels, 1/3);
-        else return 1.0f;
-    }
+    return winding_cnt / 2;
 }
 
 vec4 whiteIf(bool expr) {
@@ -275,6 +320,13 @@ vec4 whiteIf(bool expr) {
 void main() {
     vec2 pixel_em_pos = em_space_start + quad_local_pos * em_space_size;
 
-    float alpha = do_contours(pixel_em_pos);
+    float alpha_cnt = 0;
+    int sample_cnt = 0;
+    for (float offset = -0.4f; offset < 0.5f; offset += 0.1f) {
+        alpha_cnt += do_contours(pixel_em_pos + ems_per_pixel * vec2(offset));
+        sample_cnt++;
+    }
+
+    float alpha = sqrt(alpha_cnt / float(sample_cnt));
     FragColor = vec4(0, 0, 0, alpha);
 }
