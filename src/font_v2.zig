@@ -165,6 +165,7 @@ pub fn init(allocator: Allocator, filepath: []const u8) !Font {
         for (contour_end_pts) |end_pt_idx, contour_idx| {
             std.debug.print("end_pt_idx={}\n", .{end_pt_idx});
             start_of_contour_curves_pt_idx = curve_points.items.len;
+            var last_point_already_done = false;
             const start_pt_idx = if (contour_idx == 0) 0 else contour_end_pts[contour_idx - 1] + 1;
             for (flags[start_pt_idx .. end_pt_idx + 1]) |flag, i| {
                 const pt_idx = i + start_pt_idx;
@@ -181,6 +182,7 @@ pub fn init(allocator: Allocator, filepath: []const u8) !Font {
                     const last_pt = CurvePoint{ .x = x_coords[end_pt_idx], .y = y_coords[end_pt_idx] };
                     if (last_on_curve) {
                         try curve_points.append(last_pt);
+                        last_point_already_done = true;
                     } else {
                         try curve_points.append(CurvePoint{
                             .x = @divTrunc(last_pt.x + pt.x, 2),
@@ -188,6 +190,7 @@ pub fn init(allocator: Allocator, filepath: []const u8) !Font {
                         });
                     }
                 }
+                if (pt_idx == end_pt_idx and last_point_already_done) continue;
 
                 std.debug.print("adding pt={d: >4}\n", .{pt});
                 try curve_points.append(pt);

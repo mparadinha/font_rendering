@@ -29,7 +29,7 @@ pub fn main() anyerror!void {
     defer font_v2.deinit(gpa);
     //for (font_v2.curve_points) |pt| std.debug.print("({: >5}, {: >5})\n", .{ pt.x, pt.y });
     //for (font_v2.glyphs) |g| std.debug.print("pt off={}, n_pts={}\n", .{ g.points_offset, g.n_points });
-    const g_idx = 2;
+    const g_idx = 6;
     const g = font_v2.glyphs[g_idx];
     std.debug.print("points for glyph #{}\n", .{g_idx});
     for (font_v2.curve_points[g.points_offset .. g.points_offset + g.n_points]) |pt, i| {
@@ -189,25 +189,25 @@ pub fn main() anyerror!void {
 
 fn dataTexture(data: []const i16) gfx.Texture {
     std.debug.print("data texture for data.len={}\n", .{data.len});
-    var id: u32 = undefined;
-    gl.genTextures(1, &id);
-    gl.bindTexture(gl.TEXTURE_1D, id);
-    gl.texParameteri(gl.TEXTURE_1D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_1D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    var max_texture_size: i32 = undefined;
+    gl.getIntegerv(gl.MAX_TEXTURE_SIZE, &max_texture_size);
+    std.debug.print("GL_MAX_TEXTURE_SIZE = {}\n", .{max_texture_size});
+
+    const width = @intCast(u32, max_texture_size);
+    const height = @divTrunc(@intCast(u32, data.len), width) + 1;
+    std.debug.print("texture dim: ({}, {})\n", .{ width, height });
+
     // zig fmt: off
-    gl.texImage1D(
-        gl.TEXTURE_1D, 0, gl.R16I,
-        @intCast(i32, data.len), 0,
-        gl.RED_INTEGER, gl.SHORT,
-        @ptrCast(*const anyopaque, data.ptr),
+    return gfx.Texture.initOptions(
+        width, height, gl.R16I,
+        gl.RED_INTEGER, @ptrCast([*]const u8, data.ptr), gl.SHORT,
+        gl.TEXTURE_2D, false,
+        &.{
+            .{ .name = gl.TEXTURE_MIN_FILTER, .value = gl.NEAREST },
+            .{ .name = gl.TEXTURE_MAG_FILTER, .value = gl.NEAREST },
+        },
     );
     // zig fmt: on
-    return gfx.Texture{
-        .id = id,
-        .width = @intCast(u32, data.len),
-        .height = 1,
-        .tex_type = gl.TEXTURE_1D,
-    };
 }
 
 fn get_proc_address_fn(window: ?*c.GLFWwindow, proc_name: [:0]const u8) ?*const anyopaque {

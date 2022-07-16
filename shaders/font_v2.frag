@@ -6,7 +6,7 @@ uniform int points_offset;
 uniform int contour0_n_curves;
 uniform int contour1_n_curves;
 
-uniform isampler1D curve_point_data_tex;
+uniform isampler2D curve_point_data_tex;
 
 out vec4 FragColor;
 
@@ -63,9 +63,14 @@ float curve_contribution(vec2 pos, vec2 start, vec2 control, vec2 end) {
 
 // `idx` is in units of Points (i.e. two i16s)
 vec2 getPoint(int idx) {
+    int x_idx = 2 * idx;
+    int y_idx = 2 * idx + 1;
+    ivec2 tex_dim = textureSize(curve_point_data_tex, 0);
+    ivec2 x_tex_pt = ivec2(x_idx % tex_dim.x, x_idx / tex_dim.x);
+    ivec2 y_tex_pt = ivec2(y_idx % tex_dim.x, y_idx / tex_dim.x);
     return vec2(
-        float(texelFetch(curve_point_data_tex, 2 * idx + 0, 0).r),
-        float(texelFetch(curve_point_data_tex, 2 * idx + 1, 0).r)
+        float(texelFetch(curve_point_data_tex, x_tex_pt, 0).r),
+        float(texelFetch(curve_point_data_tex, y_tex_pt, 0).r)
     );
 }
 
