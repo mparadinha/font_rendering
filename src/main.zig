@@ -21,15 +21,15 @@ pub fn main() anyerror!void {
     defer _ = general_purpose_allocator.detectLeaks();
     const gpa = general_purpose_allocator.allocator();
 
-    const font = @import("font.zig");
-    const glyph = try font.loadTTF(gpa, "VictorMono-Regular.ttf");
-    defer glyph.free(gpa);
+    //const font = @import("font.zig");
+    //const glyph = try font.loadTTF(gpa, "VictorMono-Regular.ttf");
+    //defer glyph.free(gpa);
 
     const font_v2 = try @import("font_v2.zig").init(gpa, "VictorMono-Regular.ttf");
     defer font_v2.deinit(gpa);
     //for (font_v2.curve_points) |pt| std.debug.print("({: >5}, {: >5})\n", .{ pt.x, pt.y });
     //for (font_v2.glyphs) |g| std.debug.print("pt off={}, n_pts={}\n", .{ g.points_offset, g.n_points });
-    const g_idx = 6;
+    const g_idx = 0;
     const g = font_v2.glyphs[g_idx];
     std.debug.print("points for glyph #{}\n", .{g_idx});
     for (font_v2.curve_points[g.points_offset .. g.points_offset + g.n_points]) |pt, i| {
@@ -40,8 +40,8 @@ pub fn main() anyerror!void {
     std.debug.print("contour_n_curves={d}\n", .{g.contour_n_curves});
     //if (true) return;
 
-    var width: u32 = 800;
-    var height: u32 = 800;
+    var width: u32 = 900;
+    var height: u32 = 900;
 
     // setup GLFW
     var window = Window.init(gpa, width, height, "font rendering");
@@ -70,24 +70,52 @@ pub fn main() anyerror!void {
 
     var font_shader = gfx.Shader.from_files(gpa, "font_v2");
     defer font_shader.deinit();
-    // zig fmt: off
-    const quad_data = [_]f32{
-        -0.5, -0.5,   @intToFloat(f32, g.xmin), @intToFloat(f32, g.ymin),
-         0.5, -0.5,   @intToFloat(f32, g.xmax), @intToFloat(f32, g.ymin),
-         0.5,  0.5,   @intToFloat(f32, g.xmax), @intToFloat(f32, g.ymax),
-        -0.5,  0.5,   @intToFloat(f32, g.xmin), @intToFloat(f32, g.ymax),
-    };
-    // zig fmt: on
-    const quad_indices = [_]u32{ 0, 1, 2, 0, 2, 3 };
-    var quad_text_mesh = gfx.Mesh.init(&quad_data, &quad_indices, &.{
-        .{ .n_elems = 2 },
-        .{ .n_elems = 2 },
-    });
-    defer quad_text_mesh.deinit();
     var data_buf: []i16 = undefined;
     data_buf.ptr = @ptrCast([*]i16, font_v2.curve_points.ptr);
     data_buf.len = font_v2.curve_points.len * 2;
-    const texture = dataTexture(data_buf);
+    const point_data_texture = try dataTexture(i16, gpa, data_buf);
+    var glyph_data_buf = std.ArrayList(u16).init(gpa);
+    defer glyph_data_buf.deinit();
+    var glyph_data_start = std.ArrayList(usize).init(gpa);
+    defer glyph_data_start.deinit();
+    for (font_v2.glyphs) |glyph| {
+        try glyph_data_start.append(glyph_data_buf.items.len);
+
+        try glyph_data_buf.append(@intCast(u16, glyph.points_offset));
+        try glyph_data_buf.append(@intCast(u16, glyph.contour_n_curves.len));
+        for (glyph.contour_n_curves) |n_curves| try glyph_data_buf.append(n_curves);
+    }
+    const glyph_data_texture = try dataTexture(u16, gpa, glyph_data_buf.items);
+    var quad_data = std.ArrayList(f32).init(gpa);
+    defer quad_data.deinit();
+    var quad_indices = std.ArrayList(u32).init(gpa);
+    defer quad_indices.deinit();
+    var x: f32 = 0;
+    var y: f32 = 0;
+    for (font_v2.glyphs) |glyph, i| {
+        const base_indices = [_]u32{ 0, 1, 2, 0, 2, 3 };
+        for (base_indices) |idx| try quad_indices.append(idx + @intCast(u32, i) * 4);
+        const data_start = @intToFloat(f32, glyph_data_start.items[i]);
+        // zig fmt: off
+        try quad_data.appendSlice(&[_]f32{
+            x    , y    , @intToFloat(f32, glyph.xmin), @intToFloat(f32, glyph.ymin), data_start,
+            x + 1, y    , @intToFloat(f32, glyph.xmax), @intToFloat(f32, glyph.ymin), data_start,
+            x + 1, y + 1, @intToFloat(f32, glyph.xmax), @intToFloat(f32, glyph.ymax), data_start,
+            x    , y + 1, @intToFloat(f32, glyph.xmin), @intToFloat(f32, glyph.ymax), data_start,
+        });
+        // zig fmt: on
+        x += 1;
+        if (x >= 20) {
+            x = 0;
+            y += 1;
+        }
+    }
+    var quad_text_mesh = gfx.Mesh.init(quad_data.items, quad_indices.items, &.{
+        .{ .n_elems = 2 },
+        .{ .n_elems = 2 },
+        .{ .n_elems = 1 },
+    });
+    defer quad_text_mesh.deinit();
     const outline_shader = gfx.Shader.from_srcs(gpa, "outline", .{
         .vertex = 
         \\#version 330 core
@@ -153,27 +181,13 @@ pub fn main() anyerror!void {
         // start rendering
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-        //font_shader.bind();
-        //font_shader.set("viewport_size", vec2{ @intToFloat(f32, width), @intToFloat(f32, height) });
-        //font_shader.set("zoom_mult", zoom_mult);
-        //font_shader.set("pan_offset", cumm_offset + pan_offset);
-        //font_shader.set("xmin", @intCast(i32, glyph.xmin));
-        //font_shader.set("ymin", @intCast(i32, glyph.ymin));
-        //font_shader.set("xmax", @intCast(i32, glyph.xmax));
-        //font_shader.set("ymax", @intCast(i32, glyph.ymax));
-        //font_shader.set("n_contours", @intCast(u32, glyph.contours.len));
-        //font_shader.set("texture_data", @as(i32, 0));
-        //texture.bind(0);
-        //quad_text_mesh.draw();
-
         font_shader.bind();
         font_shader.set("zoom_mult", zoom_mult);
         font_shader.set("pan_offset", cumm_offset + pan_offset);
-        font_shader.set("points_offset", @intCast(i32, g.points_offset));
-        font_shader.set("contour0_n_curves", @intCast(i32, g.contour_n_curves[0]));
-        font_shader.set("contour1_n_curves", @intCast(i32, g.contour_n_curves[1]));
         font_shader.set("curve_point_data_tex", @as(i32, 0));
-        texture.bind(0);
+        point_data_texture.bind(0);
+        font_shader.set("glyph_data_tex", @as(i32, 1));
+        glyph_data_texture.bind(1);
         quad_text_mesh.draw();
 
         outline_shader.bind();
@@ -187,7 +201,7 @@ pub fn main() anyerror!void {
     }
 }
 
-fn dataTexture(data: []const i16) gfx.Texture {
+fn dataTexture(comptime T: type, allocator: Allocator, data: []const T) !gfx.Texture {
     std.debug.print("data texture for data.len={}\n", .{data.len});
     var max_texture_size: i32 = undefined;
     gl.getIntegerv(gl.MAX_TEXTURE_SIZE, &max_texture_size);
@@ -197,10 +211,29 @@ fn dataTexture(data: []const i16) gfx.Texture {
     const height = @divTrunc(@intCast(u32, data.len), width) + 1;
     std.debug.print("texture dim: ({}, {})\n", .{ width, height });
 
+    var buf = try allocator.alloc(T, width * height);
+    defer allocator.free(buf);
+    std.mem.copy(T, buf, data);
+
+    const internal_format = switch (T) {
+        u16 => gl.R16UI,
+        i16 => gl.R16I,
+        else => unreachable,
+    };
+    const data_format = switch (T) {
+        u16, i16 => gl.RED_INTEGER,
+        else => unreachable,
+    };
+    const data_type = switch (T) {
+        u16 => gl.UNSIGNED_SHORT,
+        i16 => gl.SHORT,
+        else => unreachable,
+    };
+
     // zig fmt: off
     return gfx.Texture.initOptions(
-        width, height, gl.R16I,
-        gl.RED_INTEGER, @ptrCast([*]const u8, data.ptr), gl.SHORT,
+        width, height, internal_format,
+        data_format, @ptrCast([*]const u8, buf.ptr), data_type,
         gl.TEXTURE_2D, false,
         &.{
             .{ .name = gl.TEXTURE_MIN_FILTER, .value = gl.NEAREST },

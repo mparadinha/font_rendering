@@ -1,12 +1,10 @@
 #version 420 core
 
 in vec2 em_coords;
-
-uniform int points_offset;
-uniform int contour0_n_curves;
-uniform int contour1_n_curves;
+in float glyph_data_offset;
 
 uniform isampler2D curve_point_data_tex;
+uniform isampler2D glyph_data_tex;
 
 out vec4 FragColor;
 
@@ -61,37 +59,55 @@ float curve_contribution(vec2 pos, vec2 start, vec2 control, vec2 end) {
     return coverage;
 }
 
+ivec2 texCoordsFromRawIdx(ivec2 tex_dim, int raw_idx) {
+    return ivec2(raw_idx % tex_dim.x, raw_idx / tex_dim.x);
+}
+
 // `idx` is in units of Points (i.e. two i16s)
 vec2 getPoint(int idx) {
-    int x_idx = 2 * idx;
-    int y_idx = 2 * idx + 1;
     ivec2 tex_dim = textureSize(curve_point_data_tex, 0);
-    ivec2 x_tex_pt = ivec2(x_idx % tex_dim.x, x_idx / tex_dim.x);
-    ivec2 y_tex_pt = ivec2(y_idx % tex_dim.x, y_idx / tex_dim.x);
+    ivec2 x_tex_coords = texCoordsFromRawIdx(tex_dim, 2 * idx);
+    ivec2 y_tex_coords = texCoordsFromRawIdx(tex_dim, 2 * idx + 1);
     return vec2(
-        float(texelFetch(curve_point_data_tex, x_tex_pt, 0).r),
-        float(texelFetch(curve_point_data_tex, y_tex_pt, 0).r)
+        float(texelFetch(curve_point_data_tex, x_tex_coords, 0).r),
+        float(texelFetch(curve_point_data_tex, y_tex_coords, 0).r)
     );
+}
+
+int getGlyphPointOffset() {
+    ivec2 tex_dim = textureSize(glyph_data_tex, 0);
+    ivec2 tex_coords = texCoordsFromRawIdx(tex_dim, int(glyph_data_offset));
+    return int(texelFetch(glyph_data_tex, tex_coords, 0).r);    
+}
+
+int getGlyphNContours() {
+    ivec2 tex_dim = textureSize(glyph_data_tex, 0);
+    ivec2 tex_coords = texCoordsFromRawIdx(tex_dim, int(glyph_data_offset) + 1);
+    return int(texelFetch(glyph_data_tex, tex_coords, 0).r);    
+}
+
+int getContourNCurves(int contour_idx) {
+    ivec2 tex_dim = textureSize(glyph_data_tex, 0);
+    ivec2 tex_coords = texCoordsFromRawIdx(tex_dim, int(glyph_data_offset) + 2 + contour_idx);
+    return int(texelFetch(glyph_data_tex, tex_coords, 0).r);    
 }
 
 void main() {
     float alpha = 0;
 
+    int points_offset = getGlyphPointOffset();
     int pt_idx = points_offset;
 
-    int curve_start_pt_idx = pt_idx;
-    for (int c_idx = 0; c_idx < contour0_n_curves; c_idx++) {
-        vec2 p0 = getPoint(pt_idx++);
-        vec2 p1 = getPoint(pt_idx++);
-        vec2 p2 = getPoint((c_idx == contour0_n_curves - 1) ? curve_start_pt_idx : pt_idx);
-        alpha += curve_contribution(em_coords, p0, p1, p2);
-    }
-    curve_start_pt_idx = pt_idx;
-    for (int c_idx = 0; c_idx < contour1_n_curves; c_idx++) {
-        vec2 p0 = getPoint(pt_idx++);
-        vec2 p1 = getPoint(pt_idx++);
-        vec2 p2 = getPoint((c_idx == contour1_n_curves - 1) ? curve_start_pt_idx : pt_idx);
-        alpha += curve_contribution(em_coords, p0, p1, p2);
+    int n_contours = getGlyphNContours();
+    for (int contour_idx = 0; contour_idx < n_contours; contour_idx++) {
+        int curve_start_pt_idx = pt_idx;
+        int contour_n_curves = getContourNCurves(contour_idx);
+        for (int curve_idx = 0; curve_idx < contour_n_curves; curve_idx++) {
+            vec2 p0 = getPoint(pt_idx++);
+            vec2 p1 = getPoint(pt_idx++);
+            vec2 p2 = getPoint((curve_idx == contour_n_curves - 1) ? curve_start_pt_idx : pt_idx);
+            alpha += curve_contribution(em_coords, p0, p1, p2);
+        }
     }
 
     FragColor = vec4(0, 0, 0, abs(alpha));
